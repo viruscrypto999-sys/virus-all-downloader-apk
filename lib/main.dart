@@ -96,7 +96,7 @@ class _VirusHomeDashboardState extends State<VirusHomeDashboard> {
     receiveTimeout: const Duration(seconds: 20),
   ));
 
-  bool _isExtracting = false;
+  final Set<String> _extractingBoxes = {};
   bool _isDownloading = false;
   double _downloadProgress = 0.0;
   String _consoleLog = 'SYSTEM ONLINE // READY FOR TARGET URL';
@@ -121,13 +121,13 @@ class _VirusHomeDashboardState extends State<VirusHomeDashboard> {
     _vidController = null;
   }
 
-  Future<void> _extractStream(String targetUrl) async {
+  Future<void> _extractStream(String box, String targetUrl) async {
     targetUrl = targetUrl.trim();
     if (targetUrl.isEmpty) return;
 
     FocusScope.of(context).unfocus();
     setState(() {
-      _isExtracting = true;
+      _extractingBoxes.add(box);
       _consoleLog = 'BYPASSING PLATFORM FILTERS & EXTRACTING 1080P...';
       _media = null;
     });
@@ -161,17 +161,17 @@ class _VirusHomeDashboardState extends State<VirusHomeDashboard> {
         _media = metadata;
         _vidController = vCtrl;
         _chewieController = cCtrl;
-        _isExtracting = false;
+        _extractingBoxes.remove(box);
         _consoleLog = 'STREAM SECURED // RESOLUTION: ${metadata.resolution}';
       });
     } on DioException catch (e) {
       setState(() {
-        _isExtracting = false;
+        _extractingBoxes.remove(box);
         _consoleLog = 'ERROR: ${e.response?.data?['detail'] ?? e.message}';
       });
     } catch (e) {
       setState(() {
-        _isExtracting = false;
+        _extractingBoxes.remove(box);
         _consoleLog = 'CRITICAL EXCEPTION: $e';
       });
     }
@@ -241,11 +241,11 @@ class _VirusHomeDashboardState extends State<VirusHomeDashboard> {
     }
   }
 
-  Future<void> _pasteFromClipboard(TextEditingController controller) async {
+  Future<void> _pasteFromClipboard(String box, TextEditingController controller) async {
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     if (data?.text != null && data!.text!.trim().isNotEmpty) {
       controller.text = data.text!.trim();
-      await _extractStream(controller.text);
+      await _extractStream(box, controller.text);
     }
   }
 
@@ -257,6 +257,7 @@ class _VirusHomeDashboardState extends State<VirusHomeDashboard> {
     required TextEditingController controller,
     required String hint,
   }) {
+    final busy = _extractingBoxes.contains(label);
     return Container(
       decoration: BoxDecoration(
         color: const Color(0xFF0D121D),
@@ -307,14 +308,14 @@ class _VirusHomeDashboardState extends State<VirusHomeDashboard> {
                     border: InputBorder.none,
                   ),
                   onSubmitted: (_) {
-                    if (!_isExtracting) _extractStream(controller.text);
+                    if (!busy) _extractStream(label, controller.text);
                   },
                 ),
               ),
               IconButton(
                 tooltip: 'Auto-Paste',
                 icon: Icon(Icons.paste_rounded, color: accent),
-                onPressed: _isExtracting ? null : () => _pasteFromClipboard(controller),
+                onPressed: busy ? null : () => _pasteFromClipboard(label, controller),
               ),
               ElevatedButton(
                 style: ElevatedButton.styleFrom(
@@ -322,8 +323,8 @@ class _VirusHomeDashboardState extends State<VirusHomeDashboard> {
                   foregroundColor: buttonTextColor,
                   padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                 ),
-                onPressed: _isExtracting ? null : () => _extractStream(controller.text),
-                child: _isExtracting
+                onPressed: busy ? null : () => _extractStream(label, controller.text),
+                child: busy
                     ? SizedBox(
                         width: 16,
                         height: 16,
