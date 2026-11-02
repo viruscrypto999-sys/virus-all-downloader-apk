@@ -84,10 +84,12 @@ class VirusHomeDashboard extends StatefulWidget {
 }
 
 class _VirusHomeDashboardState extends State<VirusHomeDashboard> {
-  // Point to your FastAPI backend server (use 10.0.2.2 for Android Emulator)
-  static const String _backendUrl = 'http://10.0.2.2:8000';
+  // Vercel backend (live): FastAPI + yt-dlp on Vercel serverless
+  static const String _backendUrl = 'https://virus-all-downloader-backend-virus-4b61.vercel.app';
 
-  final TextEditingController _linkController = TextEditingController();
+  final TextEditingController _tiktokController = TextEditingController();
+  final TextEditingController _youtubeController = TextEditingController();
+  final TextEditingController _fbController = TextEditingController();
   final Dio _dio = Dio(BaseOptions(
     baseUrl: _backendUrl,
     connectTimeout: const Duration(seconds: 20),
@@ -106,7 +108,9 @@ class _VirusHomeDashboardState extends State<VirusHomeDashboard> {
   @override
   void dispose() {
     _cleanupPlayer();
-    _linkController.dispose();
+    _tiktokController.dispose();
+    _youtubeController.dispose();
+    _fbController.dispose();
     super.dispose();
   }
 
@@ -117,8 +121,8 @@ class _VirusHomeDashboardState extends State<VirusHomeDashboard> {
     _vidController = null;
   }
 
-  Future<void> _extractStream() async {
-    final targetUrl = _linkController.text.trim();
+  Future<void> _extractStream(String targetUrl) async {
+    targetUrl = targetUrl.trim();
     if (targetUrl.isEmpty) return;
 
     FocusScope.of(context).unfocus();
@@ -207,7 +211,7 @@ class _VirusHomeDashboardState extends State<VirusHomeDashboard> {
         final filePath = await task.filePath();
         final hasAccess = await Gal.hasAccess(toAlbum: true);
         if (!hasAccess) await Gal.requestAccess(toAlbum: true);
-        
+
         await Gal.putVideo(filePath, album: 'VirusDownloader');
 
         final tmpFile = File(filePath);
@@ -237,12 +241,101 @@ class _VirusHomeDashboardState extends State<VirusHomeDashboard> {
     }
   }
 
-  Future<void> _pasteFromClipboard() async {
+  Future<void> _pasteFromClipboard(TextEditingController controller) async {
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     if (data?.text != null && data!.text!.trim().isNotEmpty) {
-      _linkController.text = data.text!.trim();
-      await _extractStream();
+      controller.text = data.text!.trim();
+      await _extractStream(controller.text);
     }
+  }
+
+  // One download box per platform: TikTok / YouTube / Facebook.
+  Widget _platformBox({
+    required String label,
+    required Color accent,
+    required Color buttonTextColor,
+    required TextEditingController controller,
+    required String hint,
+  }) {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF0D121D),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: accent.withOpacity(0.35)),
+      ),
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 8,
+                height: 8,
+                decoration: BoxDecoration(
+                  color: accent,
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                label,
+                style: TextStyle(
+                  color: accent,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 1.2,
+                  fontSize: 12,
+                ),
+              ),
+              const Spacer(),
+              const Text(
+                'VIDEO DOWNLOAD',
+                style: TextStyle(color: Colors.white38, fontSize: 10),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: controller,
+                  style: const TextStyle(color: Colors.white, fontSize: 13),
+                  decoration: InputDecoration(
+                    hintText: hint,
+                    hintStyle: const TextStyle(color: Colors.white24),
+                    border: InputBorder.none,
+                  ),
+                  onSubmitted: (_) {
+                    if (!_isExtracting) _extractStream(controller.text);
+                  },
+                ),
+              ),
+              IconButton(
+                tooltip: 'Auto-Paste',
+                icon: Icon(Icons.paste_rounded, color: accent),
+                onPressed: _isExtracting ? null : () => _pasteFromClipboard(controller),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: accent,
+                  foregroundColor: buttonTextColor,
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                ),
+                onPressed: _isExtracting ? null : () => _extractStream(controller.text),
+                child: _isExtracting
+                    ? SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: buttonTextColor),
+                      )
+                    : const Text('EXTRACT', style: TextStyle(fontWeight: FontWeight.bold)),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -291,50 +384,35 @@ class _VirusHomeDashboardState extends State<VirusHomeDashboard> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // Target URL Input Panel
-              Container(
-                decoration: BoxDecoration(
-                  color: const Color(0xFF0D121D),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: const Color(0xFF00FF88).withOpacity(0.3)),
-                ),
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: _linkController,
-                        style: const TextStyle(color: Colors.white, fontSize: 13),
-                        decoration: const InputDecoration(
-                          hintText: 'Paste video link here...',
-                          hintStyle: TextStyle(color: Colors.white24),
-                          border: InputBorder.none,
-                        ),
-                        onSubmitted: (_) => _extractStream(),
-                      ),
-                    ),
-                    IconButton(
-                      tooltip: 'Auto-Paste',
-                      icon: const Icon(Icons.paste_rounded, color: Color(0xFF00E5FF)),
-                      onPressed: _pasteFromClipboard,
-                    ),
-                    ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF00FF88),
-                        foregroundColor: Colors.black,
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                      ),
-                      onPressed: _isExtracting ? null : _extractStream,
-                      child: _isExtracting
-                          ? const SizedBox(
-                              width: 16,
-                              height: 16,
-                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.black),
-                            )
-                          : const Text('EXTRACT', style: TextStyle(fontWeight: FontWeight.bold)),
-                    ),
-                  ],
-                ),
+              // TikTok download box
+              _platformBox(
+                label: 'TIKTOK',
+                accent: const Color(0xFF00E5FF),
+                buttonTextColor: Colors.black,
+                controller: _tiktokController,
+                hint: 'Paste TikTok link...',
+              ),
+
+              const SizedBox(height: 12),
+
+              // YouTube download box
+              _platformBox(
+                label: 'YOUTUBE',
+                accent: const Color(0xFFFF0033),
+                buttonTextColor: Colors.white,
+                controller: _youtubeController,
+                hint: 'Paste YouTube link...',
+              ),
+
+              const SizedBox(height: 12),
+
+              // Facebook download box
+              _platformBox(
+                label: 'FACEBOOK',
+                accent: const Color(0xFF1877F2),
+                buttonTextColor: Colors.white,
+                controller: _fbController,
+                hint: 'Paste Facebook link...',
               ),
 
               const SizedBox(height: 12),
@@ -385,7 +463,7 @@ class _VirusHomeDashboardState extends State<VirusHomeDashboard> {
                               borderRadius: BorderRadius.circular(4),
                             ),
                             child: Text(
-                              '${_media!.resolution} • CLEAN HD',
+                              '${_media!.platform.toUpperCase()} • ${_media!.resolution} • CLEAN HD',
                               style: const TextStyle(
                                 color: Color(0xFF00FF88),
                                 fontSize: 10,
