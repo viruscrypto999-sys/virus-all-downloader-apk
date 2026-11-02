@@ -1,0 +1,5 @@
+package com.virus.virus_all_downloader
+
+import io.flutter.embedding.android.FlutterActivity
+
+class MainActivity : FlutterActivity()
