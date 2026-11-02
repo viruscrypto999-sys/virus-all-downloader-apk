@@ -18,8 +18,8 @@ jobs:
       - run: flutter build apk --release --split-per-abi
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.3
-          name: Virus All Downloader v1.0.3
+          tag_name: v1.0.4
+          name: Virus All Downloader v1.0.4
           files: |
             build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
             build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
