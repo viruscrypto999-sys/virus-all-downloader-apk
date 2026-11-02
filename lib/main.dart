@@ -28,7 +28,7 @@ class VirusDownloaderApp extends StatelessWidget {
       title: 'Virus All Downloader',
       debugShowCheckedModeBanner: false,
       theme: ThemeData.dark().copyWith(
-        scaffoldBackgroundColor: const Color(0xFF05070B),
+        scaffoldBackgroundColor: const Color(0xFF09090B),
         colorScheme: const ColorScheme.dark(
           primary: Color(0xFF00FF88),
           secondary: Color(0xFF00E5FF),
@@ -76,6 +76,23 @@ class MediaMetadata {
   }
 }
 
+// One theme per platform (HTML-look: tab accent + hint). No fake features:
+// no quality chips, no vault, no audio extractor, no VIP. Only real data
+// from the backend is shown (title, author, platform, resolution).
+class _PlatformTheme {
+  const _PlatformTheme(this.label, this.accent, this.buttonTextColor, this.hint);
+  final String label;
+  final Color accent;
+  final Color buttonTextColor;
+  final String hint;
+}
+
+const Map<String, _PlatformTheme> _platformThemes = {
+  'tiktok': _PlatformTheme('TIKTOK', Color(0xFF00E5FF), Colors.black, 'Paste TikTok link...'),
+  'youtube': _PlatformTheme('YOUTUBE', Color(0xFFFF0033), Colors.white, 'Paste YouTube link...'),
+  'facebook': _PlatformTheme('FACEBOOK', Color(0xFF1877F2), Colors.white, 'Paste Facebook link...'),
+};
+
 class VirusHomeDashboard extends StatefulWidget {
   const VirusHomeDashboard({super.key});
 
@@ -87,16 +104,15 @@ class _VirusHomeDashboardState extends State<VirusHomeDashboard> {
   // Vercel backend (live): FastAPI + yt-dlp on Vercel serverless
   static const String _backendUrl = 'https://virus-all-downloader-backend-virus-4b61.vercel.app';
 
-  final TextEditingController _tiktokController = TextEditingController();
-  final TextEditingController _youtubeController = TextEditingController();
-  final TextEditingController _fbController = TextEditingController();
+  final TextEditingController _urlController = TextEditingController();
   final Dio _dio = Dio(BaseOptions(
     baseUrl: _backendUrl,
     connectTimeout: const Duration(seconds: 20),
     receiveTimeout: const Duration(seconds: 20),
   ));
 
-  final Set<String> _extractingBoxes = {};
+  String _selectedPlatform = 'tiktok';
+  bool _isExtracting = false;
   bool _isDownloading = false;
   double _downloadProgress = 0.0;
   String _consoleLog = 'SYSTEM ONLINE // READY FOR TARGET URL';
@@ -108,9 +124,7 @@ class _VirusHomeDashboardState extends State<VirusHomeDashboard> {
   @override
   void dispose() {
     _cleanupPlayer();
-    _tiktokController.dispose();
-    _youtubeController.dispose();
-    _fbController.dispose();
+    _urlController.dispose();
     super.dispose();
   }
 
@@ -121,13 +135,23 @@ class _VirusHomeDashboardState extends State<VirusHomeDashboard> {
     _vidController = null;
   }
 
-  Future<void> _extractStream(String box, String targetUrl) async {
-    targetUrl = targetUrl.trim();
-    if (targetUrl.isEmpty) return;
+  String? _detectPlatform(String url) {
+    final u = url.toLowerCase();
+    if (u.contains('tiktok')) return 'tiktok';
+    if (u.contains('youtu')) return 'youtube';
+    if (u.contains('facebook') || u.contains('fb.watch')) return 'facebook';
+    return null;
+  }
 
+  Future<void> _extractStream(String targetUrl) async {
+    targetUrl = targetUrl.trim();
+    if (targetUrl.isEmpty || _isExtracting) return;
+
+    final detected = _detectPlatform(targetUrl);
     FocusScope.of(context).unfocus();
     setState(() {
-      _extractingBoxes.add(box);
+      _isExtracting = true;
+      if (detected != null) _selectedPlatform = detected;
       _consoleLog = 'BYPASSING PLATFORM FILTERS & EXTRACTING 1080P...';
       _media = null;
     });
@@ -161,17 +185,19 @@ class _VirusHomeDashboardState extends State<VirusHomeDashboard> {
         _media = metadata;
         _vidController = vCtrl;
         _chewieController = cCtrl;
-        _extractingBoxes.remove(box);
+        _isExtracting = false;
+        final p = metadata.platform.toLowerCase();
+        if (_platformThemes.containsKey(p)) _selectedPlatform = p;
         _consoleLog = 'STREAM SECURED // RESOLUTION: ${metadata.resolution}';
       });
     } on DioException catch (e) {
       setState(() {
-        _extractingBoxes.remove(box);
+        _isExtracting = false;
         _consoleLog = 'ERROR: ${e.response?.data?['detail'] ?? e.message}';
       });
     } catch (e) {
       setState(() {
-        _extractingBoxes.remove(box);
+        _isExtracting = false;
         _consoleLog = 'CRITICAL EXCEPTION: $e';
       });
     }
@@ -241,109 +267,23 @@ class _VirusHomeDashboardState extends State<VirusHomeDashboard> {
     }
   }
 
-  Future<void> _pasteFromClipboard(String box, TextEditingController controller) async {
+  Future<void> _pasteFromClipboard() async {
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     if (data?.text != null && data!.text!.trim().isNotEmpty) {
-      controller.text = data.text!.trim();
-      await _extractStream(box, controller.text);
+      _urlController.text = data.text!.trim();
+      await _extractStream(_urlController.text);
     }
-  }
-
-  // One download box per platform: TikTok / YouTube / Facebook.
-  Widget _platformBox({
-    required String label,
-    required Color accent,
-    required Color buttonTextColor,
-    required TextEditingController controller,
-    required String hint,
-  }) {
-    final busy = _extractingBoxes.contains(label);
-    return Container(
-      decoration: BoxDecoration(
-        color: const Color(0xFF0D121D),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: accent.withOpacity(0.35)),
-      ),
-      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            children: [
-              Container(
-                width: 8,
-                height: 8,
-                decoration: BoxDecoration(
-                  color: accent,
-                  shape: BoxShape.circle,
-                ),
-              ),
-              const SizedBox(width: 8),
-              Text(
-                label,
-                style: TextStyle(
-                  color: accent,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 1.2,
-                  fontSize: 12,
-                ),
-              ),
-              const Spacer(),
-              const Text(
-                'VIDEO DOWNLOAD',
-                style: TextStyle(color: Colors.white38, fontSize: 10),
-              ),
-            ],
-          ),
-          const SizedBox(height: 6),
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: controller,
-                  style: const TextStyle(color: Colors.white, fontSize: 13),
-                  decoration: InputDecoration(
-                    hintText: hint,
-                    hintStyle: const TextStyle(color: Colors.white24),
-                    border: InputBorder.none,
-                  ),
-                  onSubmitted: (_) {
-                    if (!busy) _extractStream(label, controller.text);
-                  },
-                ),
-              ),
-              IconButton(
-                tooltip: 'Auto-Paste',
-                icon: Icon(Icons.paste_rounded, color: accent),
-                onPressed: busy ? null : () => _pasteFromClipboard(label, controller),
-              ),
-              ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: accent,
-                  foregroundColor: buttonTextColor,
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                ),
-                onPressed: busy ? null : () => _extractStream(label, controller.text),
-                child: busy
-                    ? SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2, color: buttonTextColor),
-                      )
-                    : const Text('EXTRACT', style: TextStyle(fontWeight: FontWeight.bold)),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
   }
 
   @override
   Widget build(BuildContext context) {
+    final theme = _platformThemes[_selectedPlatform]!;
+    final accent = theme.accent;
+
     return Scaffold(
+      backgroundColor: const Color(0xFF09090B),
       appBar: AppBar(
-        backgroundColor: const Color(0xFF05070B),
+        backgroundColor: const Color(0xFF09090B),
         elevation: 0,
         title: Row(
           children: [
@@ -379,168 +319,284 @@ class _VirusHomeDashboardState extends State<VirusHomeDashboard> {
           )
         ],
       ),
-      body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              // TikTok download box
-              _platformBox(
-                label: 'TIKTOK',
-                accent: const Color(0xFF00E5FF),
-                buttonTextColor: Colors.black,
-                controller: _tiktokController,
-                hint: 'Paste TikTok link...',
-              ),
-
-              const SizedBox(height: 12),
-
-              // YouTube download box
-              _platformBox(
-                label: 'YOUTUBE',
-                accent: const Color(0xFFFF0033),
-                buttonTextColor: Colors.white,
-                controller: _youtubeController,
-                hint: 'Paste YouTube link...',
-              ),
-
-              const SizedBox(height: 12),
-
-              // Facebook download box
-              _platformBox(
-                label: 'FACEBOOK',
-                accent: const Color(0xFF1877F2),
-                buttonTextColor: Colors.white,
-                controller: _fbController,
-                hint: 'Paste Facebook link...',
-              ),
-
-              const SizedBox(height: 12),
-
-              // Console Terminal Status
-              Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF090D14),
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(color: Colors.white10),
-                ),
-                child: Text(
-                  '> $_consoleLog',
-                  style: const TextStyle(color: Color(0xFF00FF88), fontSize: 11),
+      body: Stack(
+        children: [
+          // Aurora glow (HTML look): platform accent fading from the top.
+          Positioned.fill(
+            child: Container(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    accent.withOpacity(0.22),
+                    Colors.transparent,
+                    Colors.transparent,
+                  ],
+                  stops: const [0.0, 0.45, 1.0],
                 ),
               ),
-
-              const SizedBox(height: 16),
-
-              // Video Preview Card + 1-Click Action Button
-              if (_media != null && _chewieController != null) ...[
-                Container(
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF0D121D),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.white12),
-                  ),
-                  padding: const EdgeInsets.all(12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text(
-                            '@${_media!.author}',
-                            style: const TextStyle(
-                              color: Color(0xFF00E5FF),
-                              fontWeight: FontWeight.bold,
-                              fontSize: 13,
+            ),
+          ),
+          SafeArea(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // Platform switcher (HTML look): one URL bar, tab selects accent.
+                  Container(
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF0D121D),
+                      borderRadius: BorderRadius.circular(999),
+                      border: Border.all(color: Colors.white10),
+                    ),
+                    padding: const EdgeInsets.all(4),
+                    child: Row(
+                      children: _platformThemes.entries.map((e) {
+                        final selected = e.key == _selectedPlatform;
+                        return Expanded(
+                          child: GestureDetector(
+                            onTap: () => setState(() => _selectedPlatform = e.key),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(vertical: 10),
+                              decoration: BoxDecoration(
+                                color: selected ? e.value.accent.withOpacity(0.2) : Colors.transparent,
+                                borderRadius: BorderRadius.circular(999),
+                                border: Border.all(
+                                  color: selected ? e.value.accent : Colors.transparent,
+                                ),
+                              ),
+                              child: Text(
+                                e.value.label,
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  color: selected ? e.value.accent : Colors.white38,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 12,
+                                  letterSpacing: 1.0,
+                                ),
+                              ),
                             ),
                           ),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF00FF88).withOpacity(0.15),
-                              borderRadius: BorderRadius.circular(4),
-                            ),
-                            child: Text(
-                              '${_media!.platform.toUpperCase()} • ${_media!.resolution} • CLEAN HD',
-                              style: const TextStyle(
-                                color: Color(0xFF00FF88),
-                                fontSize: 10,
-                                fontWeight: FontWeight.bold,
+                        );
+                      }).toList(),
+                    ),
+                  ),
+
+                  const SizedBox(height: 16),
+
+                  // URL bar card (HTML look): dot + label + single input + paste + extract.
+                  Container(
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF0D121D),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: accent.withOpacity(0.35)),
+                    ),
+                    padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Row(
+                          children: [
+                            Container(
+                              width: 8,
+                              height: 8,
+                              decoration: BoxDecoration(
+                                color: accent,
+                                shape: BoxShape.circle,
                               ),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              theme.label,
+                              style: TextStyle(
+                                color: accent,
+                                fontWeight: FontWeight.bold,
+                                letterSpacing: 1.2,
+                                fontSize: 12,
+                              ),
+                            ),
+                            const Spacer(),
+                            const Text(
+                              'VIDEO DOWNLOAD',
+                              style: TextStyle(color: Colors.white38, fontSize: 10),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: TextField(
+                                controller: _urlController,
+                                style: const TextStyle(color: Colors.white, fontSize: 13),
+                                decoration: InputDecoration(
+                                  hintText: theme.hint,
+                                  hintStyle: const TextStyle(color: Colors.white24),
+                                  border: InputBorder.none,
+                                ),
+                                onSubmitted: (_) {
+                                  if (!_isExtracting) _extractStream(_urlController.text);
+                                },
+                              ),
+                            ),
+                            IconButton(
+                              tooltip: 'Auto-Paste',
+                              icon: Icon(Icons.paste_rounded, color: accent),
+                              onPressed: _isExtracting ? null : _pasteFromClipboard,
+                            ),
+                            ElevatedButton(
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: accent,
+                                foregroundColor: theme.buttonTextColor,
+                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                              ),
+                              onPressed: _isExtracting ? null : () => _extractStream(_urlController.text),
+                              child: _isExtracting
+                                  ? SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: theme.buttonTextColor,
+                                      ),
+                                    )
+                                  : const Text('EXTRACT', style: TextStyle(fontWeight: FontWeight.bold)),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  const SizedBox(height: 12),
+
+                  // Console Terminal Status
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF090D14),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: Colors.white10),
+                    ),
+                    child: Text(
+                      '> $_consoleLog',
+                      style: const TextStyle(color: Color(0xFF00FF88), fontSize: 11),
+                    ),
+                  ),
+
+                  const SizedBox(height: 16),
+
+                  // Video Preview Card + Download Button (real data only).
+                  if (_media != null && _chewieController != null) ...[
+                    Container(
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF0D121D),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.white12),
+                      ),
+                      padding: const EdgeInsets.all(12),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Text(
+                                '@${_media!.author}',
+                                style: const TextStyle(
+                                  color: Color(0xFF00E5FF),
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 13,
+                                ),
+                              ),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF00FF88).withOpacity(0.15),
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Text(
+                                  '${_media!.platform.toUpperCase()} • ${_media!.resolution}',
+                                  style: const TextStyle(
+                                    color: Color(0xFF00FF88),
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            _media!.title,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(color: Colors.white70, fontSize: 12),
+                          ),
+                          const SizedBox(height: 12),
+
+                          // Interactive Live Preview Player
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(8),
+                            child: AspectRatio(
+                              aspectRatio: _vidController!.value.aspectRatio,
+                              child: Chewie(controller: _chewieController!),
+                            ),
+                          ),
+
+                          const SizedBox(height: 16),
+
+                          if (_isDownloading) ...[
+                            LinearProgressIndicator(
+                              value: _downloadProgress,
+                              backgroundColor: Colors.white10,
+                              color: const Color(0xFF00FF88),
+                              minHeight: 6,
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              'DOWNLOADING: ${(_downloadProgress * 100).toStringAsFixed(0)}%',
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(color: Colors.white70, fontSize: 11),
+                            ),
+                            const SizedBox(height: 12),
+                          ],
+
+                          // Save Button
+                          SizedBox(
+                            height: 52,
+                            child: ElevatedButton.icon(
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFF00FF88),
+                                foregroundColor: Colors.black,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                              ),
+                              icon: const Icon(Icons.download_rounded, size: 22),
+                              label: Text(
+                                _isDownloading
+                                    ? 'SAVING TO GALLERY...'
+                                    : 'DOWNLOAD (${_media!.resolution})',
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  letterSpacing: 0.8,
+                                ),
+                              ),
+                              onPressed: _isDownloading ? null : _executeDownload,
                             ),
                           ),
                         ],
                       ),
-                      const SizedBox(height: 8),
-                      Text(
-                        _media!.title,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(color: Colors.white70, fontSize: 12),
-                      ),
-                      const SizedBox(height: 12),
-
-                      // Interactive Live Preview Player
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(8),
-                        child: AspectRatio(
-                          aspectRatio: _vidController!.value.aspectRatio,
-                          child: Chewie(controller: _chewieController!),
-                        ),
-                      ),
-
-                      const SizedBox(height: 16),
-
-                      if (_isDownloading) ...[
-                        LinearProgressIndicator(
-                          value: _downloadProgress,
-                          backgroundColor: Colors.white10,
-                          color: const Color(0xFF00FF88),
-                          minHeight: 6,
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          'DOWNLOADING: ${(_downloadProgress * 100).toStringAsFixed(0)}%',
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(color: Colors.white70, fontSize: 11),
-                        ),
-                        const SizedBox(height: 12),
-                      ],
-
-                      // 1-Click Save Button
-                      SizedBox(
-                        height: 52,
-                        child: ElevatedButton.icon(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF00FF88),
-                            foregroundColor: Colors.black,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                          ),
-                          icon: const Icon(Icons.download_rounded, size: 22),
-                          label: Text(
-                            _isDownloading
-                                ? 'SAVING TO GALLERY...'
-                                : '1-CLICK DOWNLOAD FULL HD (${_media!.resolution})',
-                            style: const TextStyle(
-                              fontWeight: FontWeight.bold,
-                              letterSpacing: 0.8,
-                            ),
-                          ),
-                          onPressed: _isDownloading ? null : _executeDownload,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ],
+                    ),
+                  ],
+                ],
+              ),
+            ),
           ),
-        ),
+        ],
       ),
     );
   }
