@@ -91,6 +91,7 @@ const Map<String, _PlatformTheme> _platformThemes = {
   'tiktok': _PlatformTheme('TIKTOK', Color(0xFF00E5FF), Colors.black, 'Paste TikTok link...'),
   'youtube': _PlatformTheme('YOUTUBE', Color(0xFFFF0033), Colors.white, 'Paste YouTube link...'),
   'facebook': _PlatformTheme('FACEBOOK', Color(0xFF1877F2), Colors.white, 'Paste Facebook link...'),
+  'instagram': _PlatformTheme('INSTAGRAM', Color(0xFFE1306C), Colors.white, 'Paste Instagram link...'),
 };
 
 class VirusHomeDashboard extends StatefulWidget {
@@ -139,6 +140,7 @@ class _VirusHomeDashboardState extends State<VirusHomeDashboard> {
     final u = url.toLowerCase();
     if (u.contains('tiktok')) return 'tiktok';
     if (u.contains('youtu')) return 'youtube';
+    if (u.contains('instagram')) return 'instagram';
     if (u.contains('facebook') || u.contains('fb.watch')) return 'facebook';
     return null;
   }
@@ -285,39 +287,24 @@ class _VirusHomeDashboardState extends State<VirusHomeDashboard> {
       appBar: AppBar(
         backgroundColor: const Color(0xFF09090B),
         elevation: 0,
-        title: Row(
+        title: const Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Container(
-              width: 12,
-              height: 12,
-              decoration: const BoxDecoration(
-                color: Color(0xFF00FF88),
-                shape: BoxShape.circle,
-              ),
-            ),
-            const SizedBox(width: 12),
-            const Text(
-              'VIRUS // ALL DOWNLOADER',
+            Text(
+              'VIRUS ALL DOWNLOADER',
               style: TextStyle(
-                color: Color(0xFF00FF88),
+                color: Colors.white,
                 fontWeight: FontWeight.bold,
                 letterSpacing: 1.2,
                 fontSize: 15,
               ),
             ),
+            Text(
+              'TITANIUM SPATIAL OS V4.8 • HYPER-ENGINE',
+              style: TextStyle(color: Colors.white38, fontSize: 10, letterSpacing: 1.0),
+            ),
           ],
         ),
-        actions: const [
-          Center(
-            child: Padding(
-              padding: EdgeInsets.only(right: 16),
-              child: Text(
-                'NO-ADS • PRO',
-                style: TextStyle(color: Colors.white38, fontSize: 10),
-              ),
-            ),
-          )
-        ],
       ),
       body: Stack(
         children: [
@@ -361,17 +348,17 @@ class _VirusHomeDashboardState extends State<VirusHomeDashboard> {
                             child: Container(
                               padding: const EdgeInsets.symmetric(vertical: 10),
                               decoration: BoxDecoration(
-                                color: selected ? e.value.accent.withOpacity(0.2) : Colors.transparent,
+                                color: selected ? const Color(0xFF172554) : Colors.transparent,
                                 borderRadius: BorderRadius.circular(999),
                                 border: Border.all(
-                                  color: selected ? e.value.accent : Colors.transparent,
+                                  color: selected ? const Color(0xFF3B82F6) : Colors.transparent,
                                 ),
                               ),
                               child: Text(
                                 e.value.label,
                                 textAlign: TextAlign.center,
                                 style: TextStyle(
-                                  color: selected ? e.value.accent : Colors.white38,
+                                  color: selected ? Colors.white : Colors.white38,
                                   fontWeight: FontWeight.bold,
                                   fontSize: 12,
                                   letterSpacing: 1.0,
