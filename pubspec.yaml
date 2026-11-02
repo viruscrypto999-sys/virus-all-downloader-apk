@@ -1,0 +1,27 @@
+name: virus_all_downloader
+description: "Virus All Downloader - High-Performance Unwatermarked Media Engine"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  dio: ^5.7.0
+  background_downloader: ^8.6.0
+  video_player: ^2.9.2
+  chewie: ^1.8.5
+  gal: ^2.3.0
+  path_provider: ^2.1.5
+  permission_handler: ^11.3.1
+  google_fonts: ^6.2.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
