@@ -7,19 +7,16 @@ import 'package:flutter/services.dart';
 import 'package:gal/gal.dart';
 import 'package:video_player/video_player.dart';
 
-// LOOK ONLY: header, hero + orb, cards, buttons and background glows are
-// ported from the GPT-6 starter's look. Everything else is unchanged:
-// same backend, same extract/download logic, same live preview player,
-// same gallery save, same icon. No bug fixes in this change.
+// v2.7: look from the GPT-6 starter (header, hero + orb, cards, buttons,
+// glows). Fixes in this change: (1) metadata is set before video-player
+// init, so a preview failure no longer hides the download button;
+// (2) the background download is wrapped in try/catch/finally, so an
+// exception can no longer leave the button stuck on downloading;
+// (3) main() stays light, notification config moves after the first frame.
+// Backend, gallery save, live preview and icon are unchanged.
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  FileDownloader().configureNotification(
-    running: const TaskNotification('Virus Engine Active', 'Downloading {filename}'),
-    complete: const TaskNotification('Download Finished', 'Saved to Gallery: {filename}'),
-    error: const TaskNotification('Download Failed', 'Error saving {filename}'),
-    progressBar: true,
-  );
   runApp(const VirusDownloaderApp());
 }
 
@@ -141,6 +138,15 @@ class _VirusHomeDashboardState extends State<VirusHomeDashboard>
       vsync: this,
       duration: const Duration(seconds: 8),
     )..repeat();
+    // Keep startup light: notification config moves after the first frame.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      FileDownloader().configureNotification(
+        running: const TaskNotification('Virus Engine Active', 'Downloading {filename}'),
+        complete: const TaskNotification('Download Finished', 'Saved to Gallery: {filename}'),
+        error: const TaskNotification('Download Failed', 'Error saving {filename}'),
+        progressBar: true,
+      );
+    });
   }
 
   @override
@@ -189,31 +195,49 @@ class _VirusHomeDashboardState extends State<VirusHomeDashboard>
 
       final metadata = MediaMetadata.fromJson(response.data);
 
-      final vCtrl = VideoPlayerController.networkUrl(Uri.parse(metadata.proxyDownloadUrl));
-      await vCtrl.initialize();
-
-      final cCtrl = ChewieController(
-        videoPlayerController: vCtrl,
-        autoPlay: true,
-        looping: true,
-        aspectRatio: vCtrl.value.aspectRatio,
-        materialProgressColors: ChewieProgressColors(
-          playedColor: const Color(0xFF69E2FF),
-          handleColor: const Color(0xFF63E6FF),
-          backgroundColor: Colors.white24,
-          bufferedColor: Colors.white54,
-        ),
-      );
-
+      // Metadata first: the download button must survive a preview failure.
       setState(() {
         _media = metadata;
-        _vidController = vCtrl;
-        _chewieController = cCtrl;
-        _isExtracting = false;
         final p = metadata.platform.toLowerCase();
         if (_platformLabels.containsKey(p)) _selectedPlatform = p;
         _consoleLog = 'STREAM SECURED // RESOLUTION: ${metadata.resolution}';
       });
+
+      try {
+        final vCtrl = VideoPlayerController.networkUrl(Uri.parse(metadata.proxyDownloadUrl));
+        await vCtrl.initialize();
+
+        final cCtrl = ChewieController(
+          videoPlayerController: vCtrl,
+          autoPlay: true,
+          looping: true,
+          aspectRatio: vCtrl.value.aspectRatio,
+          materialProgressColors: ChewieProgressColors(
+            playedColor: const Color(0xFF69E2FF),
+            handleColor: const Color(0xFF63E6FF),
+            backgroundColor: Colors.white24,
+            bufferedColor: Colors.white54,
+          ),
+        );
+
+        if (!mounted) {
+          vCtrl.dispose();
+          return;
+        }
+        setState(() {
+          _vidController = vCtrl;
+          _chewieController = cCtrl;
+        });
+      } catch (e) {
+        // Preview failed, but _media stays so download still works.
+        if (mounted) {
+          setState(() {
+            _consoleLog = 'PREVIEW UNAVAILABLE // DOWNLOAD STILL READY: $e';
+          });
+        }
+      } finally {
+        if (mounted) setState(() => _isExtracting = false);
+      }
     } on DioException catch (e) {
       setState(() {
         _isExtracting = false;
@@ -247,47 +271,57 @@ class _VirusHomeDashboardState extends State<VirusHomeDashboard>
       allowPause: true,
     );
 
-    final result = await FileDownloader().download(
-      task,
-      onProgress: (progress) {
-        if (mounted && progress >= 0) {
-          setState(() => _downloadProgress = progress);
+    try {
+      final result = await FileDownloader().download(
+        task,
+        onProgress: (progress) {
+          if (mounted && progress >= 0) {
+            setState(() => _downloadProgress = progress);
+          }
+        },
+      );
+
+      if (result.status == TaskStatus.complete) {
+        try {
+          final filePath = await task.filePath();
+          final hasAccess = await Gal.hasAccess(toAlbum: true);
+          if (!hasAccess) await Gal.requestAccess(toAlbum: true);
+
+          await Gal.putVideo(filePath, album: 'VirusDownloader');
+
+          final tmpFile = File(filePath);
+          if (await tmpFile.exists()) await tmpFile.delete();
+
+          if (mounted) {
+            setState(() {
+              _isDownloading = false;
+              _consoleLog = 'SUCCESS: SAVED TO GALLERY [ALBUM: VirusDownloader]';
+            });
+          }
+        } catch (err) {
+          if (mounted) {
+            setState(() {
+              _isDownloading = false;
+              _consoleLog = 'GALLERY ERROR: $err';
+            });
+          }
         }
-      },
-    );
-
-    if (result.status == TaskStatus.complete) {
-      try {
-        final filePath = await task.filePath();
-        final hasAccess = await Gal.hasAccess(toAlbum: true);
-        if (!hasAccess) await Gal.requestAccess(toAlbum: true);
-
-        await Gal.putVideo(filePath, album: 'VirusDownloader');
-
-        final tmpFile = File(filePath);
-        if (await tmpFile.exists()) await tmpFile.delete();
-
+      } else {
         if (mounted) {
           setState(() {
             _isDownloading = false;
-            _consoleLog = 'SUCCESS: SAVED TO GALLERY [ALBUM: VirusDownloader]';
-          });
-        }
-      } catch (err) {
-        if (mounted) {
-          setState(() {
-            _isDownloading = false;
-            _consoleLog = 'GALLERY ERROR: $err';
+            _consoleLog = 'DOWNLOAD FAILED: ${result.status.name.toUpperCase()}';
           });
         }
       }
-    } else {
+    } catch (e) {
       if (mounted) {
         setState(() {
-          _isDownloading = false;
-          _consoleLog = 'DOWNLOAD FAILED: ${result.status.name.toUpperCase()}';
+          _consoleLog = 'DOWNLOAD ERROR: $e';
         });
       }
+    } finally {
+      if (mounted) setState(() => _isDownloading = false);
     }
   }
 
@@ -335,7 +369,7 @@ class _VirusHomeDashboardState extends State<VirusHomeDashboard>
                     ),
                   ),
                   const SizedBox(height: 16),
-                  if (_media != null && _chewieController != null) _previewCard(),
+                  if (_media != null) _previewCard(),
                 ],
               ),
             ),
@@ -619,13 +653,27 @@ class _VirusHomeDashboardState extends State<VirusHomeDashboard>
             )),
           ]),
           const SizedBox(height: 15),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: AspectRatio(
-              aspectRatio: _vidController!.value.aspectRatio,
-              child: Chewie(controller: _chewieController!),
+          if (_chewieController != null && _vidController != null)
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: AspectRatio(
+                aspectRatio: _vidController!.value.aspectRatio,
+                child: Chewie(controller: _chewieController!),
+              ),
+            )
+          else
+            Container(
+              height: 145,
+              width: double.infinity,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(8),
+                color: const Color(0xFF202B3E),
+              ),
+              child: const Center(
+                child: Text('Preview unavailable — download still works.',
+                  style: TextStyle(color: Color(0xFFB9C7DA), fontSize: 12)),
+              ),
             ),
-          ),
           const SizedBox(height: 15),
           Text(media.title, maxLines: 2, overflow: TextOverflow.ellipsis,
             style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
