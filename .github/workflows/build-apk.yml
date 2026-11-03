@@ -15,7 +15,7 @@ jobs:
         with:
           channel: 'stable'
       - run: flutter pub get
-      - run: flutter build apk --release --split-per-abi --no-enable-impeller
+      - run: flutter build apk --release --split-per-abi
       - run: |
           cd build/app/outputs/flutter-apk
           mv app-arm64-v8a-release.apk Virus-All-Downloader.apk
