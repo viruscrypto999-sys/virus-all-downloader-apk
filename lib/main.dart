@@ -14,6 +14,9 @@ import 'package:video_player/video_player.dart';
 // exception can no longer leave the button stuck on downloading;
 // (3) main() stays light, notification config moves after the first frame.
 // Backend, gallery save, live preview and icon are unchanged.
+// v2.8 (GPT-6 ANR fix): notification config is lazy — it no longer runs
+// at startup (not even post-frame); it runs once, just before the first
+// download, via _configureDownloader(). Everything else unchanged.
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -124,6 +127,7 @@ class _VirusHomeDashboardState extends State<VirusHomeDashboard>
   String _selectedPlatform = 'tiktok';
   bool _isExtracting = false;
   bool _isDownloading = false;
+  bool _downloaderConfigured = false;
   double _downloadProgress = 0.0;
   String _consoleLog = 'SYSTEM ONLINE // READY FOR TARGET URL';
 
@@ -138,15 +142,6 @@ class _VirusHomeDashboardState extends State<VirusHomeDashboard>
       vsync: this,
       duration: const Duration(seconds: 8),
     )..repeat();
-    // Keep startup light: notification config moves after the first frame.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      FileDownloader().configureNotification(
-        running: const TaskNotification('Virus Engine Active', 'Downloading {filename}'),
-        complete: const TaskNotification('Download Finished', 'Saved to Gallery: {filename}'),
-        error: const TaskNotification('Download Failed', 'Error saving {filename}'),
-        progressBar: true,
-      );
-    });
   }
 
   @override
@@ -251,6 +246,19 @@ class _VirusHomeDashboardState extends State<VirusHomeDashboard>
     }
   }
 
+  void _configureDownloader() {
+    if (_downloaderConfigured) return;
+
+    FileDownloader().configureNotification(
+      running: const TaskNotification('Virus Engine Active', 'Downloading {filename}'),
+      complete: const TaskNotification('Download Finished', 'Saved to Gallery: {filename}'),
+      error: const TaskNotification('Download Failed', 'Error saving {filename}'),
+      progressBar: true,
+    );
+
+    _downloaderConfigured = true;
+  }
+
   Future<void> _executeDownload() async {
     final item = _media;
     if (item == null || _isDownloading) return;
@@ -272,6 +280,8 @@ class _VirusHomeDashboardState extends State<VirusHomeDashboard>
     );
 
     try {
+      _configureDownloader();
+
       final result = await FileDownloader().download(
         task,
         onProgress: (progress) {

@@ -23,8 +23,8 @@ jobs:
           mv app-x86_64-release.apk Virus-All-Downloader-x86_64.apk
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.6
-          name: Virus All Downloader v1.0.6
+          tag_name: v1.0.7
+          name: Virus All Downloader v1.0.7
           files: |
             build/app/outputs/flutter-apk/Virus-All-Downloader-armv7.apk
             build/app/outputs/flutter-apk/Virus-All-Downloader.apk
