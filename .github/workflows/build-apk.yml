@@ -15,7 +15,7 @@ jobs:
         with:
           channel: 'stable'
       - run: flutter pub get
-      - run: flutter build apk --release --split-per-abi
+      - run: flutter build apk --release --split-per-abi --no-enable-impeller
       - run: |
           cd build/app/outputs/flutter-apk
           mv app-arm64-v8a-release.apk Virus-All-Downloader.apk
@@ -23,8 +23,8 @@ jobs:
           mv app-x86_64-release.apk Virus-All-Downloader-x86_64.apk
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.4
-          name: Virus All Downloader v1.0.4
+          tag_name: v1.0.5
+          name: Virus All Downloader v1.0.5
           files: |
             build/app/outputs/flutter-apk/Virus-All-Downloader-armv7.apk
             build/app/outputs/flutter-apk/Virus-All-Downloader.apk
