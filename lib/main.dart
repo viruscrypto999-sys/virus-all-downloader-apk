@@ -1,4 +1,7 @@
+import 'dart:async';
 import 'dart:io';
+import 'dart:ui';
+
 import 'package:background_downloader/background_downloader.dart';
 import 'package:chewie/chewie.dart';
 import 'package:dio/dio.dart';
@@ -7,24 +10,36 @@ import 'package:flutter/services.dart';
 import 'package:gal/gal.dart';
 import 'package:video_player/video_player.dart';
 
-// v2.7: look from the GPT-6 starter (header, hero + orb, cards, buttons,
-// glows). Fixes in this change: (1) metadata is set before video-player
-// init, so a preview failure no longer hides the download button;
-// (2) the background download is wrapped in try/catch/finally, so an
-// exception can no longer leave the button stuck on downloading;
-// (3) main() stays light, notification config moves after the first frame.
-// Backend, gallery save, live preview and icon are unchanged.
-// v2.8 (GPT-6 ANR fix): notification config is lazy — it no longer runs
-// at startup (not even post-frame); it runs once, just before the first
-// download, via _configureDownloader(). Everything else unchanged.
+const String kBackendBaseUrl =
+    'https://virus-all-downloader-backend-virus-4b61.vercel.app';
+const String kExtractEndpoint = '$kBackendBaseUrl/api/v1/extract';
+const String kGalleryAlbumName = 'VirusDownloader';
+const String kAppVersion = 'v2.9 (1.0.8)';
 
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  runApp(const VirusDownloaderApp());
+void main() {
+  // Note (Proof #6): Catches unhandled Dart async errors only;
+  // does NOT intercept native Java/Kotlin/C++ crashes.
+  runZonedGuarded(
+    () {
+      WidgetsFlutterBinding.ensureInitialized();
+      FlutterError.onError = (FlutterErrorDetails details) {
+        FlutterError.presentError(details);
+        debugPrint('FlutterError: ${details.exceptionAsString()}');
+      };
+      PlatformDispatcher.instance.onError = (Object error, StackTrace stack) {
+        debugPrint('PlatformDispatcher Error: $error\n$stack');
+        return true;
+      };
+      runApp(const VirusAllDownloaderApp());
+    },
+    (Object error, StackTrace stack) {
+      debugPrint('Zoned Error: $error\n$stack');
+    },
+  );
 }
 
-class VirusDownloaderApp extends StatelessWidget {
-  const VirusDownloaderApp({super.key});
+class VirusAllDownloaderApp extends StatelessWidget {
+  const VirusAllDownloaderApp({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -33,561 +48,711 @@ class VirusDownloaderApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         brightness: Brightness.dark,
-        scaffoldBackgroundColor: const Color(0xFF080B14),
-        fontFamily: 'Roboto',
+        scaffoldBackgroundColor: const Color(0xFF080B12),
         colorScheme: const ColorScheme.dark(
-          primary: Color(0xFF63E6FF),
-          secondary: Color(0xFF9B7BFF),
-          surface: Color(0xFF151B2A),
+          primary: Color(0xFF00F5D4),
+          secondary: Color(0xFF7B2CBF),
+          surface: Color(0xFF121824),
+          error: Color(0xFFFF4D6D),
         ),
         useMaterial3: true,
       ),
-      home: const VirusHomeDashboard(),
+      home: const DownloaderHomeScreen(),
     );
   }
 }
 
-class MediaMetadata {
-  final String platform;
-  final String id;
+class ExtractedMedia {
   final String title;
-  final String author;
-  final String resolution;
-  final bool isWatermarked;
   final String videoUrl;
-  final String proxyDownloadUrl;
+  final String? thumbnailUrl;
+  final String platform;
+  final String? durationText;
+  final Map<String, String> headers;
 
-  MediaMetadata({
-    required this.platform,
-    required this.id,
+  const ExtractedMedia({
     required this.title,
-    required this.author,
-    required this.resolution,
-    required this.isWatermarked,
     required this.videoUrl,
-    required this.proxyDownloadUrl,
+    required this.platform,
+    this.thumbnailUrl,
+    this.durationText,
+    this.headers = const {},
   });
 
-  factory MediaMetadata.fromJson(Map<String, dynamic> json) {
-    return MediaMetadata(
-      platform: json['platform'] ?? 'unknown',
-      id: json['id'] ?? '0',
-      title: json['title'] ?? 'Untitled Stream',
-      author: json['author'] ?? 'unknown',
-      resolution: json['resolution'] ?? '1080x1920',
-      isWatermarked: json['is_watermarked'] ?? false,
-      videoUrl: json['video_url'] ?? '',
-      proxyDownloadUrl: json['proxy_download_url'] ?? '',
+  factory ExtractedMedia.fromJson(Map<String, dynamic> raw, String sourceUrl) {
+    final Map<String, dynamic> data = (raw['data'] is Map<String, dynamic>)
+        ? raw['data'] as Map<String, dynamic>
+        : (raw['result'] is Map<String, dynamic>)
+            ? raw['result'] as Map<String, dynamic>
+            : raw;
+    String? resolvedUrl = _firstNonEmptyString(data, [
+      'download_url',
+      'video_url',
+      'url',
+      'direct_url',
+      'play_url',
+      'stream_url',
+    ]);
+    if ((resolvedUrl == null || resolvedUrl.isEmpty) && data['formats'] is List) {
+      final List<dynamic> formats = data['formats'] as List<dynamic>;
+      for (final item in formats.reversed) {
+        if (item is Map<String, dynamic>) {
+          final candidate = _firstNonEmptyString(item, ['url', 'download_url']);
+          final vcodec = item['vcodec']?.toString() ?? '';
+          if (candidate != null &&
+              candidate.startsWith('http') &&
+              vcodec != 'none') {
+            resolvedUrl = candidate;
+            break;
+          }
+        }
+      }
+    }
+    if (resolvedUrl == null || !resolvedUrl.startsWith('http')) {
+      throw const FormatException(
+        'Backend response did not contain a valid direct video URL.',
+      );
+    }
+    final Map<String, String> parsedHeaders = {};
+    final dynamic rawHeaders = data['http_headers'] ?? data['headers'];
+    if (rawHeaders is Map) {
+      rawHeaders.forEach((key, value) {
+        if (key != null && value != null) {
+          parsedHeaders[key.toString()] = value.toString();
+        }
+      });
+    }
+    final String title = _firstNonEmptyString(data, [
+          'title',
+          'description',
+          'caption',
+        ]) ??
+        'Virus_Video_${DateTime.now().millisecondsSinceEpoch}';
+    final String? thumbnail = _firstNonEmptyString(data, [
+      'thumbnail',
+      'cover',
+      'thumbnail_url',
+      'origin_cover',
+    ]);
+    final String platform = _firstNonEmptyString(data, [
+          'platform',
+          'extractor',
+          'extractor_key',
+        ]) ??
+        _detectPlatform(sourceUrl);
+    String? durationText;
+    final dynamic rawDuration = data['duration_string'] ?? data['duration'];
+    if (rawDuration is String && rawDuration.trim().isNotEmpty) {
+      durationText = rawDuration.trim();
+    } else if (rawDuration is num && rawDuration > 0) {
+      final int totalSeconds = rawDuration.round();
+      final int mins = totalSeconds ~/ 60;
+      final int secs = totalSeconds % 60;
+      durationText = '$mins:${secs.toString().padLeft(2, '0')}';
+    }
+    return ExtractedMedia(
+      title: title,
+      videoUrl: resolvedUrl,
+      thumbnailUrl: thumbnail,
+      platform: platform.toUpperCase(),
+      durationText: durationText,
+      headers: parsedHeaders,
     );
+  }
+
+  static String? _firstNonEmptyString(
+    Map<String, dynamic> map,
+    List<String> keys,
+  ) {
+    for (final key in keys) {
+      final val = map[key];
+      if (val is String && val.trim().isNotEmpty) {
+        return val.trim();
+      }
+    }
+    return null;
+  }
+
+  static String _detectPlatform(String url) {
+    final lower = url.toLowerCase();
+    if (lower.contains('tiktok.com')) return 'TIKTOK';
+    if (lower.contains('facebook.com') || lower.contains('fb.watch')) {
+      return 'FACEBOOK';
+    }
+    if (lower.contains('instagram.com')) return 'INSTAGRAM';
+    if (lower.contains('youtube.com') || lower.contains('youtu.be')) {
+      return 'YOUTUBE';
+    }
+    return 'VIDEO';
   }
 }
 
-// Starter look: static cyan/purple theme (no per-platform accents).
-const Map<String, String> _platformLabels = {
-  'tiktok': 'TIKTOK',
-  'youtube': 'YOUTUBE',
-  'facebook': 'FACEBOOK',
-  'instagram': 'INSTAGRAM',
-};
-
-const Map<String, String> _platformHints = {
-  'tiktok': 'Paste TikTok link...',
-  'youtube': 'Paste YouTube link...',
-  'facebook': 'Paste Facebook link...',
-  'instagram': 'Paste Instagram link...',
-};
-
-const Map<String, IconData> _platformIcons = {
-  'tiktok': Icons.music_note_rounded,
-  'youtube': Icons.play_circle_fill_rounded,
-  'facebook': Icons.facebook_rounded,
-  'instagram': Icons.camera_alt_rounded,
-};
-
-class VirusHomeDashboard extends StatefulWidget {
-  const VirusHomeDashboard({super.key});
+class DownloaderHomeScreen extends StatefulWidget {
+  const DownloaderHomeScreen({super.key});
 
   @override
-  State<VirusHomeDashboard> createState() => _VirusHomeDashboardState();
+  State<DownloaderHomeScreen> createState() => _DownloaderHomeScreenState();
 }
 
-class _VirusHomeDashboardState extends State<VirusHomeDashboard>
+class _DownloaderHomeScreenState extends State<DownloaderHomeScreen>
     with SingleTickerProviderStateMixin {
-  // Vercel backend (live): FastAPI + yt-dlp on Vercel serverless
-  static const String _backendUrl = 'https://virus-all-downloader-backend-virus-4b61.vercel.app';
-
   final TextEditingController _urlController = TextEditingController();
-  final Dio _dio = Dio(BaseOptions(
-    baseUrl: _backendUrl,
-    connectTimeout: const Duration(seconds: 20),
-    receiveTimeout: const Duration(seconds: 20),
-  ));
-
-  late final AnimationController _orbController;
-  String _selectedPlatform = 'tiktok';
-  bool _isExtracting = false;
-  bool _isDownloading = false;
+  late final AnimationController _ambientController;
+  // Lazily created only when user triggers extraction or download
+  Dio? _dio;
   bool _downloaderConfigured = false;
-  double _downloadProgress = 0.0;
-  String _consoleLog = 'SYSTEM ONLINE // READY FOR TARGET URL';
-
-  MediaMetadata? _media;
-  VideoPlayerController? _vidController;
+  VideoPlayerController? _videoController;
   ChewieController? _chewieController;
+  ExtractedMedia? _extractedMedia;
+  bool _isExtracting = false;
+  bool _isInitializingPreview = false;
+  String? _previewError;
+  bool _isDownloading = false;
+  double _downloadProgress = 0.0;
+  String _statusMessage = 'Paste a TikTok, Facebook, Instagram, or YouTube link';
+  bool _isErrorStatus = false;
 
   @override
   void initState() {
     super.initState();
-    _orbController = AnimationController(
+    // Restored 8-second repeating AnimationController (started after Frame 1 renders)
+    _ambientController = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 8),
-    )..repeat();
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _ambientController.repeat(reverse: true);
+      }
+    });
   }
 
   @override
   void dispose() {
-    _orbController.dispose();
-    _cleanupPlayer();
+    _ambientController.dispose();
+    _disposeVideoPlayers();
     _urlController.dispose();
+    _dio?.close();
     super.dispose();
   }
 
-  void _cleanupPlayer() {
-    _chewieController?.dispose();
-    _vidController?.dispose();
-    _chewieController = null;
-    _vidController = null;
-  }
-
-  String? _detectPlatform(String url) {
-    final u = url.toLowerCase();
-    if (u.contains('tiktok')) return 'tiktok';
-    if (u.contains('youtu')) return 'youtube';
-    if (u.contains('instagram')) return 'instagram';
-    if (u.contains('facebook') || u.contains('fb.watch')) return 'facebook';
-    return null;
-  }
-
-  Future<void> _extractStream(String targetUrl) async {
-    targetUrl = targetUrl.trim();
-    if (targetUrl.isEmpty || _isExtracting) return;
-
-    final detected = _detectPlatform(targetUrl);
-    FocusScope.of(context).unfocus();
-    setState(() {
-      _isExtracting = true;
-      if (detected != null) _selectedPlatform = detected;
-      _consoleLog = 'BYPASSING PLATFORM FILTERS & EXTRACTING 1080P...';
-      _media = null;
-    });
-    _cleanupPlayer();
-
-    try {
-      final response = await _dio.post(
-        '/api/v1/extract',
-        data: {'url': targetUrl, 'prefer_codec': 'h264'},
-      );
-
-      final metadata = MediaMetadata.fromJson(response.data);
-
-      // Metadata first: the download button must survive a preview failure.
-      setState(() {
-        _media = metadata;
-        final p = metadata.platform.toLowerCase();
-        if (_platformLabels.containsKey(p)) _selectedPlatform = p;
-        _consoleLog = 'STREAM SECURED // RESOLUTION: ${metadata.resolution}';
-      });
-
-      try {
-        final vCtrl = VideoPlayerController.networkUrl(Uri.parse(metadata.proxyDownloadUrl));
-        await vCtrl.initialize();
-
-        final cCtrl = ChewieController(
-          videoPlayerController: vCtrl,
-          autoPlay: true,
-          looping: true,
-          aspectRatio: vCtrl.value.aspectRatio,
-          materialProgressColors: ChewieProgressColors(
-            playedColor: const Color(0xFF69E2FF),
-            handleColor: const Color(0xFF63E6FF),
-            backgroundColor: Colors.white24,
-            bufferedColor: Colors.white54,
-          ),
-        );
-
-        if (!mounted) {
-          vCtrl.dispose();
-          return;
-        }
-        setState(() {
-          _vidController = vCtrl;
-          _chewieController = cCtrl;
-        });
-      } catch (e) {
-        // Preview failed, but _media stays so download still works.
-        if (mounted) {
-          setState(() {
-            _consoleLog = 'PREVIEW UNAVAILABLE // DOWNLOAD STILL READY: $e';
-          });
-        }
-      } finally {
-        if (mounted) setState(() => _isExtracting = false);
-      }
-    } on DioException catch (e) {
-      setState(() {
-        _isExtracting = false;
-        _consoleLog = 'ERROR: ${e.response?.data?['detail'] ?? e.message}';
-      });
-    } catch (e) {
-      setState(() {
-        _isExtracting = false;
-        _consoleLog = 'CRITICAL EXCEPTION: $e';
-      });
-    }
-  }
-
-  void _configureDownloader() {
-    if (_downloaderConfigured) return;
-
-    FileDownloader().configureNotification(
-      running: const TaskNotification('Virus Engine Active', 'Downloading {filename}'),
-      complete: const TaskNotification('Download Finished', 'Saved to Gallery: {filename}'),
-      error: const TaskNotification('Download Failed', 'Error saving {filename}'),
-      progressBar: true,
-    );
-
-    _downloaderConfigured = true;
-  }
-
-  Future<void> _executeDownload() async {
-    final item = _media;
-    if (item == null || _isDownloading) return;
-
-    setState(() {
-      _isDownloading = true;
-      _downloadProgress = 0.0;
-      _consoleLog = 'INITIALIZING BACKGROUND STREAM TRANSFER...';
-    });
-
-    final fileName = 'virus_${item.platform}_${item.id}.mp4';
-    final task = DownloadTask(
-      url: item.proxyDownloadUrl,
-      filename: fileName,
-      baseDirectory: BaseDirectory.temporary,
-      updates: Updates.statusAndProgress,
-      retries: 3,
-      allowPause: true,
-    );
-
-    try {
-      _configureDownloader();
-
-      final result = await FileDownloader().download(
-        task,
-        onProgress: (progress) {
-          if (mounted && progress >= 0) {
-            setState(() => _downloadProgress = progress);
-          }
+  Dio _getDio() {
+    return _dio ??= Dio(
+      BaseOptions(
+        connectTimeout: const Duration(seconds: 25),
+        receiveTimeout: const Duration(seconds: 45),
+        sendTimeout: const Duration(seconds: 20),
+        headers: const {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
         },
-      );
+      ),
+    );
+  }
 
-      if (result.status == TaskStatus.complete) {
-        try {
-          final filePath = await task.filePath();
-          final hasAccess = await Gal.hasAccess(toAlbum: true);
-          if (!hasAccess) await Gal.requestAccess(toAlbum: true);
-
-          await Gal.putVideo(filePath, album: 'VirusDownloader');
-
-          final tmpFile = File(filePath);
-          if (await tmpFile.exists()) await tmpFile.delete();
-
-          if (mounted) {
-            setState(() {
-              _isDownloading = false;
-              _consoleLog = 'SUCCESS: SAVED TO GALLERY [ALBUM: VirusDownloader]';
-            });
-          }
-        } catch (err) {
-          if (mounted) {
-            setState(() {
-              _isDownloading = false;
-              _consoleLog = 'GALLERY ERROR: $err';
-            });
-          }
-        }
-      } else {
-        if (mounted) {
-          setState(() {
-            _isDownloading = false;
-            _consoleLog = 'DOWNLOAD FAILED: ${result.status.name.toUpperCase()}';
-          });
-        }
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _consoleLog = 'DOWNLOAD ERROR: $e';
-        });
-      }
-    } finally {
-      if (mounted) setState(() => _isDownloading = false);
-    }
+  void _disposeVideoPlayers() {
+    final chewie = _chewieController;
+    final video = _videoController;
+    _chewieController = null;
+    _videoController = null;
+    chewie?.dispose();
+    video?.dispose();
   }
 
   Future<void> _pasteFromClipboard() async {
-    final data = await Clipboard.getData(Clipboard.kTextPlain);
-    if (data?.text != null && data!.text!.trim().isNotEmpty) {
-      _urlController.text = data.text!.trim();
-      await _extractStream(_urlController.text);
+    try {
+      final ClipboardData? data =
+          await Clipboard.getData(Clipboard.kTextPlain);
+      final String text = data?.text?.trim() ?? '';
+      if (text.isNotEmpty && mounted) {
+        setState(() {
+          _urlController.text = text;
+        });
+      }
+    } catch (e) {
+      _setStatus('Clipboard access failed: $e', isError: true);
+    }
+  }
+
+  void _setStatus(String message, {bool isError = false}) {
+    if (!mounted) return;
+    setState(() {
+      _statusMessage = message;
+      _isErrorStatus = isError;
+    });
+  }
+
+  bool _isSupportedUrl(String input) {
+    final uri = Uri.tryParse(input);
+    if (uri == null || !uri.hasScheme || !uri.scheme.startsWith('http')) {
+      return false;
+    }
+    final host = uri.host.toLowerCase();
+    return host.contains('tiktok.com') ||
+        host.contains('facebook.com') ||
+        host.contains('fb.watch') ||
+        host.contains('fb.com') ||
+        host.contains('instagram.com') ||
+        host.contains('youtube.com') ||
+        host.contains('youtu.be');
+  }
+
+  Future<void> _extractVideo() async {
+    final String rawUrl = _urlController.text.trim();
+    if (rawUrl.isEmpty) {
+      _setStatus('Please enter a video link first.', isError: true);
+      return;
+    }
+    if (!_isSupportedUrl(rawUrl)) {
+      _setStatus(
+        'Supported platforms: TikTok, Facebook, Instagram, YouTube.',
+        isError: true,
+      );
+      return;
+    }
+    FocusScope.of(context).unfocus();
+    _disposeVideoPlayers();
+    setState(() {
+      _isExtracting = true;
+      _extractedMedia = null;
+      _previewError = null;
+      _downloadProgress = 0.0;
+      _statusMessage = 'Extracting video via Virus Backend...';
+      _isErrorStatus = false;
+    });
+    try {
+      final response = await _getDio().post<Map<String, dynamic>>(
+        kExtractEndpoint,
+        data: {'url': rawUrl},
+      );
+      final Map<String, dynamic>? body = response.data;
+      if (body == null) {
+        throw const FormatException('Empty response from backend server.');
+      }
+      if (body['status'] == 'error' || body['error'] != null) {
+        final errMsg =
+            body['detail'] ?? body['error'] ?? body['message'] ?? 'Unknown error';
+        throw Exception(errMsg.toString());
+      }
+      final media = ExtractedMedia.fromJson(body, rawUrl);
+      if (!mounted) return;
+      setState(() {
+        _extractedMedia = media;
+        _isExtracting = false;
+        _statusMessage = 'Video extracted. Loading live preview...';
+        _isErrorStatus = false;
+      });
+      await _initializePreviewPlayer(media);
+    } on DioException catch (e) {
+      String detail = e.message ?? 'Network request failed';
+      if (e.response?.data is Map) {
+        final map = e.response!.data as Map;
+        detail = (map['detail'] ?? map['message'] ?? map['error'] ?? detail)
+            .toString();
+      }
+      if (!mounted) return;
+      setState(() {
+        _isExtracting = false;
+      });
+      _setStatus('Extraction error: $detail', isError: true);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isExtracting = false;
+      });
+      _setStatus('Extraction failed: $e', isError: true);
+    }
+  }
+
+  Future<void> _initializePreviewPlayer(ExtractedMedia media) async {
+    if (!mounted) return;
+    setState(() {
+      _isInitializingPreview = true;
+      _previewError = null;
+    });
+    VideoPlayerController? controller;
+    try {
+      controller = VideoPlayerController.networkUrl(
+        Uri.parse(media.videoUrl),
+        httpHeaders: media.headers,
+      );
+      await controller.initialize().timeout(const Duration(seconds: 20));
+      if (!mounted) {
+        await controller.dispose();
+        return;
+      }
+      final double aspect = controller.value.aspectRatio > 0
+          ? controller.value.aspectRatio
+          : (9 / 16);
+      final chewie = ChewieController(
+        videoPlayerController: controller,
+        autoPlay: false,
+        looping: false,
+        aspectRatio: aspect,
+        allowFullScreen: true,
+        allowMuting: true,
+        showControls: true,
+        errorBuilder: (context, errorMessage) {
+          return Center(
+            child: Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Text(
+                'Preview unavailable ($errorMessage).\nYou can still download the video below.',
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.white70, fontSize: 13),
+              ),
+            ),
+          );
+        },
+      );
+      setState(() {
+        _videoController = controller;
+        _chewieController = chewie;
+        _isInitializingPreview = false;
+        _statusMessage = 'Ready to preview & download.';
+        _isErrorStatus = false;
+      });
+    } catch (e) {
+      await controller?.dispose();
+      if (!mounted) return;
+      setState(() {
+        _isInitializingPreview = false;
+        _previewError =
+            'Live preview could not be initialized, but direct download is ready.';
+        _statusMessage = 'Ready to download.';
+        _isErrorStatus = false;
+      });
+    }
+  }
+
+  Future<void> _ensureDownloaderConfiguredLazy() async {
+    if (_downloaderConfigured) return;
+    try {
+      final status = await FileDownloader().permissions.status(
+            PermissionType.notifications,
+          );
+      if (status != PermissionStatus.granted) {
+        await FileDownloader().permissions.request(
+              PermissionType.notifications,
+            );
+      }
+      FileDownloader().configureNotification(
+        running: const TaskNotification(
+          'Virus All Downloader',
+          'Downloading {filename}',
+        ),
+        complete: const TaskNotification(
+          'Download Complete',
+          'Saved {filename} to VirusDownloader',
+        ),
+        error: const TaskNotification(
+          'Download Failed',
+          'Could not download {filename}',
+        ),
+        progressBar: true,
+      );
+      _downloaderConfigured = true;
+    } catch (e) {
+      debugPrint('Lazy notification config warning: $e');
+    }
+  }
+
+  Future<void> _downloadAndSaveToGallery() async {
+    final ExtractedMedia? media = _extractedMedia;
+    if (media == null || _isDownloading) return;
+    setState(() {
+      _isDownloading = true;
+      _downloadProgress = 0.01;
+      _statusMessage = 'Preparing background download...';
+      _isErrorStatus = false;
+    });
+    String? downloadedFilePath;
+    try {
+      await _ensureDownloaderConfiguredLazy();
+      final String safeBase = media.title
+          .replaceAll(RegExp(r'[^a-zA-Z0-9_\-]'), '_')
+          .replaceAll(RegExp(r'_+'), '_');
+      final String clippedBase =
+          safeBase.length > 40 ? safeBase.substring(0, 40) : safeBase;
+      final String filename =
+          '${clippedBase.isEmpty ? "virus_video" : clippedBase}_${DateTime.now().millisecondsSinceEpoch}.mp4';
+      final task = DownloadTask(
+        url: media.videoUrl,
+        filename: filename,
+        headers: media.headers,
+        directory: 'virus_downloads',
+        baseDirectory: BaseDirectory.applicationDocuments,
+        updates: Updates.statusAndProgress,
+        allowPause: true,
+      );
+      final TaskStatusUpdate result = await FileDownloader().download(
+        task,
+        onProgress: (double progress) {
+          if (!mounted) return;
+          if (progress >= 0 && progress <= 1.0) {
+            setState(() {
+              _downloadProgress = progress;
+              final pct = (progress * 100).toStringAsFixed(0);
+              _statusMessage = 'Downloading in background... $pct%';
+            });
+          }
+        },
+        onStatus: (TaskStatus status) {
+          if (!mounted) return;
+          if (status == TaskStatus.running) {
+            setState(() {
+              _statusMessage = 'Downloading video...';
+            });
+          }
+        },
+      );
+      if (result.status != TaskStatus.complete) {
+        throw Exception(
+          result.exception?.description ??
+              'Download ended with status: ${result.status.name}',
+        );
+      }
+      downloadedFilePath = await task.filePath();
+      final File downloadedFile = File(downloadedFilePath);
+      if (!await downloadedFile.exists() || await downloadedFile.length() == 0) {
+        throw Exception('Downloaded file is missing or empty.');
+      }
+      _setStatus('Saving video to Gallery ($kGalleryAlbumName)...');
+      bool hasGalAccess = await Gal.hasAccess(toAlbum: true);
+      if (!hasGalAccess) {
+        hasGalAccess = await Gal.requestAccess(toAlbum: true);
+      }
+      if (!hasGalAccess) {
+        throw Exception('Gallery permission denied.');
+      }
+      await Gal.putVideo(downloadedFilePath, album: kGalleryAlbumName);
+      if (!mounted) return;
+      setState(() {
+        _downloadProgress = 1.0;
+        _statusMessage =
+            'Saved to Gallery album "$kGalleryAlbumName" successfully!';
+        _isErrorStatus = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          backgroundColor: Color(0xFF00F5D4),
+          content: Text(
+            'Saved to Gallery (Album: VirusDownloader)',
+            style: TextStyle(
+              color: Color(0xFF080B12),
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ),
+      );
+    } catch (e) {
+      _setStatus('Download/Save failed: $e', isError: true);
+    } finally {
+      if (downloadedFilePath != null) {
+        try {
+          final f = File(downloadedFilePath);
+          if (await f.exists()) {
+            await f.delete();
+          }
+        } catch (_) {}
+      }
+      if (mounted) {
+        setState(() {
+          _isDownloading = false;
+        });
+      }
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF080B14),
-      body: Stack(
-        children: [
-          const _BackgroundGlow(),
-          SafeArea(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.fromLTRB(20, 14, 20, 28),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF0D121D),
+        elevation: 0,
+        centerTitle: false,
+        title: Row(
+          children: [
+            Container(
+              width: 34,
+              height: 34,
+              decoration: BoxDecoration(
+                color: const Color(0xFF00F5D4).withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: const Color(0xFF00F5D4).withValues(alpha: 0.5),
+                ),
+              ),
+              child: const Icon(
+                Icons.bolt_rounded,
+                color: Color(0xFF00F5D4),
+                size: 20,
+              ),
+            ),
+            const SizedBox(width: 12),
+            const Expanded(
               child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  _header(),
-                  const SizedBox(height: 30),
-                  _hero(),
-                  const SizedBox(height: 26),
-                  _platformPicker(),
-                  const SizedBox(height: 18),
-                  _inputCard(),
-                  const SizedBox(height: 18),
-                  _extractButton(),
-                  const SizedBox(height: 12),
-                  Container(
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF090D14),
-                      borderRadius: BorderRadius.circular(6),
-                      border: Border.all(color: Colors.white10),
-                    ),
-                    child: Text(
-                      '> $_consoleLog',
-                      style: const TextStyle(color: Color(0xFF00FF88), fontSize: 11),
+                  Text(
+                    'VIRUS ALL DOWNLOADER',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 1.1,
+                      color: Colors.white,
                     ),
                   ),
-                  const SizedBox(height: 16),
-                  if (_media != null) _previewCard(),
+                  Text(
+                    'TikTok • Facebook • Instagram • YouTube',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: Colors.white54,
+                    ),
+                  ),
                 ],
               ),
             ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _header() {
-    return Row(
-      children: [
-        Container(
-          width: 42,
-          height: 42,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(14),
-            gradient: const LinearGradient(
-              colors: [Color(0xFF65E9FF), Color(0xFF9474FF)],
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: const Color(0xFF55CFFF).withOpacity(.25),
-                blurRadius: 20,
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: Colors.white10,
+                borderRadius: BorderRadius.circular(6),
               ),
-            ],
-          ),
-          child: const Icon(Icons.bolt_rounded, color: Color(0xFF07101B), size: 27),
-        ),
-        const SizedBox(width: 12),
-        const Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('VIRUS', style: TextStyle(
-              fontSize: 17, fontWeight: FontWeight.w900, letterSpacing: 2.2,
-            )),
-            Text('ALL DOWNLOADER', style: TextStyle(
-              fontSize: 9, color: Color(0xFF8D9AB1), letterSpacing: 2.1,
-            )),
+              child: const Text(
+                kAppVersion,
+                style: TextStyle(
+                  fontSize: 10,
+                  color: Color(0xFF00F5D4),
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
           ],
         ),
-        const Spacer(),
-        Container(
-          padding: const EdgeInsets.all(11),
-          decoration: BoxDecoration(
-            color: Colors.white.withOpacity(.045),
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: Colors.white.withOpacity(.08)),
-          ),
-          child: const Icon(Icons.tune_rounded, color: Color(0xFFB6C4D9), size: 19),
-        ),
-      ],
-    );
-  }
-
-  Widget _hero() {
-    return Row(
-      children: [
-        Expanded(
+      ),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(16),
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: const [
-              Text('Your video.', style: TextStyle(
-                fontSize: 32, height: 1.05, fontWeight: FontWeight.w800,
-                letterSpacing: -1.2,
-              )),
-              Text('One tap away.', style: TextStyle(
-                fontSize: 32, height: 1.12, fontWeight: FontWeight.w800,
-                letterSpacing: -1.2, color: Color(0xFF6DE5FF),
-              )),
-              SizedBox(height: 10),
-              Text('Paste a link. Preview it. Save it.',
-                style: TextStyle(color: Color(0xFF98A5BB), fontSize: 13)),
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _buildInputCard(),
+              const SizedBox(height: 14),
+              _buildStatusBanner(),
+              if (_extractedMedia != null) ...[
+                const SizedBox(height: 16),
+                _buildMediaPreviewCard(_extractedMedia!),
+              ],
             ],
           ),
         ),
-        SizedBox(
-          width: 105,
-          height: 105,
-          child: AnimatedBuilder(
-            animation: _orbController,
-            builder: (context, child) => Transform.rotate(
-              angle: _orbController.value * 6.28318,
-              child: child,
-            ),
-            child: Container(
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: const SweepGradient(
-                  colors: [
-                    Color(0xFF65E9FF), Color(0xFF8A78FF),
-                    Color(0xFFFF79B7), Color(0xFF65E9FF),
-                  ],
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: const Color(0xFF7D76FF).withOpacity(.22),
-                    blurRadius: 34, spreadRadius: 2,
-                  ),
-                ],
-              ),
-              child: Padding(
-                padding: const EdgeInsets.all(2),
-                child: Container(
-                  decoration: const BoxDecoration(
-                    shape: BoxShape.circle,
-                    gradient: RadialGradient(
-                      colors: [Color(0xFF293B59), Color(0xFF101728)],
-                    ),
-                  ),
-                  child: const Icon(Icons.play_arrow_rounded,
-                    size: 48, color: Color(0xFFB5F5FF)),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _platformPicker() {
-    final choices = ['tiktok', 'youtube', 'facebook', 'instagram'];
-    return Wrap(
-      spacing: 8,
-      runSpacing: 8,
-      children: choices.map((key) {
-        final selected = key == _selectedPlatform;
-        return GestureDetector(
-          onTap: () => setState(() => _selectedPlatform = key),
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 180),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(14),
-              color: selected
-                  ? const Color(0xFF273B58)
-                  : const Color(0xFF121A29),
-              border: Border.all(
-                color: selected
-                    ? const Color(0xFF69DFFB).withOpacity(.7)
-                    : Colors.white.withOpacity(.07),
-              ),
-            ),
-            child: Row(mainAxisSize: MainAxisSize.min, children: [
-              Icon(_platformIcons[key], size: 15,
-                color: selected ? const Color(0xFF75E8FF) : const Color(0xFF8B9AB2)),
-              const SizedBox(width: 6),
-              Text(_platformLabels[key]!, style: TextStyle(
-                fontSize: 11, fontWeight: FontWeight.w700,
-                color: selected ? Colors.white : const Color(0xFF9AA8BD),
-              )),
-            ]),
-          ),
-        );
-      }).toList(),
-    );
-  }
-
-  Widget _inputCard() {
-    return Container(
-      padding: const EdgeInsets.all(15),
-      decoration: BoxDecoration(
-        color: const Color(0xFF151D2D).withOpacity(.92),
-        borderRadius: BorderRadius.circular(23),
-        border: Border.all(color: const Color(0xFF8194B8).withOpacity(.17)),
-        boxShadow: [
-          BoxShadow(color: Colors.black.withOpacity(.22),
-            blurRadius: 25, offset: const Offset(0, 12)),
-        ],
       ),
+    );
+  }
+
+  Widget _buildInputCard() {
+    return AnimatedBuilder(
+      animation: _ambientController,
+      builder: (context, child) {
+        final Color borderGlow = Color.lerp(
+          const Color(0xFF00F5D4).withValues(alpha: 0.35),
+          const Color(0xFF7B2CBF).withValues(alpha: 0.55),
+          _ambientController.value,
+        )!;
+        return Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: const Color(0xFF121824),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: borderGlow, width: 1.2),
+          ),
+          child: child,
+        );
+      },
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Text('VIDEO LINK', style: TextStyle(
-            color: Color(0xFF8191AC), fontSize: 10,
-            letterSpacing: 1.7, fontWeight: FontWeight.w700,
-          )),
-          const SizedBox(height: 10),
+          TextField(
+            controller: _urlController,
+            style: const TextStyle(color: Colors.white, fontSize: 14),
+            decoration: InputDecoration(
+              hintText: 'Paste TikTok, FB, IG, or YouTube URL...',
+              hintStyle: const TextStyle(color: Colors.white38),
+              filled: true,
+              fillColor: const Color(0xFF080B12),
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 14,
+                vertical: 14,
+              ),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: const BorderSide(color: Colors.white12),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: const BorderSide(color: Colors.white12),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: const BorderSide(color: Color(0xFF00F5D4)),
+              ),
+              suffixIcon: IconButton(
+                tooltip: 'Clear',
+                icon: const Icon(Icons.clear, color: Colors.white54, size: 18),
+                onPressed: () {
+                  _urlController.clear();
+                },
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
           Row(
             children: [
-              const Icon(Icons.link_rounded, color: Color(0xFF69DFFB)),
-              const SizedBox(width: 9),
               Expanded(
-                child: TextField(
-                  controller: _urlController,
-                  keyboardType: TextInputType.url,
-                  textInputAction: TextInputAction.go,
-                  onSubmitted: (_) {
-                    if (!_isExtracting) _extractStream(_urlController.text);
-                  },
-                  decoration: InputDecoration(
-                    hintText: _platformHints[_selectedPlatform],
-                    hintStyle: const TextStyle(color: Color(0xFF68758D), fontSize: 14),
-                    border: InputBorder.none,
-                    isDense: true,
+                flex: 2,
+                child: OutlinedButton.icon(
+                  onPressed: _isExtracting ? null : _pasteFromClipboard,
+                  icon: const Icon(Icons.content_paste_rounded, size: 18),
+                  label: const Text('Paste'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.white,
+                    side: const BorderSide(color: Colors.white24),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
                   ),
-                  style: const TextStyle(fontSize: 14),
                 ),
               ),
-              TextButton(
-                onPressed: _isExtracting ? null : _pasteFromClipboard,
-                child: const Text('PASTE', style: TextStyle(
-                  color: Color(0xFF70E5FF), fontWeight: FontWeight.w800,
-                  fontSize: 11,
-                )),
+              const SizedBox(width: 10),
+              Expanded(
+                flex: 3,
+                child: ElevatedButton.icon(
+                  onPressed: _isExtracting ? null : _extractVideo,
+                  icon: _isExtracting
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Color(0xFF080B12),
+                          ),
+                        )
+                      : const Icon(Icons.bolt_rounded, size: 20),
+                  label: Text(
+                    _isExtracting ? 'Extracting...' : 'Extract Video',
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF00F5D4),
+                    foregroundColor: const Color(0xFF080B12),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                ),
               ),
             ],
           ),
@@ -596,143 +761,153 @@ class _VirusHomeDashboardState extends State<VirusHomeDashboard>
     );
   }
 
-  Widget _extractButton() {
-    return GestureDetector(
-      onTap: _isExtracting ? null : () => _extractStream(_urlController.text),
-      child: Container(
-        height: 58,
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(19),
-          gradient: const LinearGradient(
-            colors: [Color(0xFF65E8FF), Color(0xFF8B83FF), Color(0xFFBD79F5)],
+  Widget _buildStatusBanner() {
+    final Color borderColor = _isErrorStatus
+        ? const Color(0xFFFF4D6D).withValues(alpha: 0.5)
+        : const Color(0xFF00F5D4).withValues(alpha: 0.3);
+    final Color iconColor =
+        _isErrorStatus ? const Color(0xFFFF4D6D) : const Color(0xFF00F5D4);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFF121824),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: borderColor),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            _isErrorStatus
+                ? Icons.error_outline_rounded
+                : Icons.info_outline_rounded,
+            color: iconColor,
+            size: 20,
           ),
-          boxShadow: [
-            BoxShadow(color: const Color(0xFF777BFF).withOpacity(.25),
-              blurRadius: 22, offset: const Offset(0, 9)),
-          ],
-        ),
-        child: Center(
-          child: _isExtracting
-              ? const SizedBox(
-                  width: 22, height: 22,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2.5, color: Color(0xFF101626),
-                  ),
-                )
-              : const Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.auto_awesome_rounded,
-                      color: Color(0xFF101626), size: 19),
-                    SizedBox(width: 9),
-                    Text('EXTRACT', style: TextStyle(
-                      color: Color(0xFF101626), fontWeight: FontWeight.w900,
-                      letterSpacing: 1.4, fontSize: 13,
-                    )),
-                  ],
-                ),
-        ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              _statusMessage,
+              style: TextStyle(
+                color: _isErrorStatus
+                    ? const Color(0xFFFF8FA3)
+                    : Colors.white70,
+                fontSize: 13,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
 
-  Widget _previewCard() {
-    final media = _media!;
+  Widget _buildMediaPreviewCard(ExtractedMedia media) {
     return Container(
-      padding: const EdgeInsets.all(17),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: const Color(0xFF141C2B),
-        borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: const Color(0xFF7F8FB0).withOpacity(.18)),
+        color: const Color(0xFF121824),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white12),
       ),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Row(children: [
-            const Icon(Icons.check_circle_rounded,
-              color: Color(0xFF72E5B0), size: 17),
-            const SizedBox(width: 7),
-            const Text('VIDEO FOUND', style: TextStyle(
-              color: Color(0xFF72E5B0), fontSize: 10,
-              letterSpacing: 1.5, fontWeight: FontWeight.w800,
-            )),
-            const Spacer(),
-            Text(media.platform.toUpperCase(), style: const TextStyle(
-              color: Color(0xFF9AA8C0), fontSize: 10,
-              letterSpacing: 1,
-            )),
-          ]),
-          const SizedBox(height: 15),
-          if (_chewieController != null && _vidController != null)
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 4,
+                ),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF00F5D4).withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  media.platform,
+                  style: const TextStyle(
+                    color: Color(0xFF00F5D4),
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              if (media.durationText != null) ...[
+                const SizedBox(width: 8),
+                Text(
+                  media.durationText!,
+                  style: const TextStyle(color: Colors.white54, fontSize: 12),
+                ),
+              ],
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            media.title,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 15,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 14),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: Container(
+              height: 280,
+              color: Colors.black,
+              child: _buildPreviewContent(media),
+            ),
+          ),
+          if (_previewError != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              _previewError!,
+              style: const TextStyle(color: Colors.white54, fontSize: 12),
+              textAlign: TextAlign.center,
+            ),
+          ],
+          const SizedBox(height: 16),
+          if (_isDownloading) ...[
             ClipRRect(
               borderRadius: BorderRadius.circular(8),
-              child: AspectRatio(
-                aspectRatio: _vidController!.value.aspectRatio,
-                child: Chewie(controller: _chewieController!),
-              ),
-            )
-          else
-            Container(
-              height: 145,
-              width: double.infinity,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(8),
-                color: const Color(0xFF202B3E),
-              ),
-              child: const Center(
-                child: Text('Preview unavailable — download still works.',
-                  style: TextStyle(color: Color(0xFFB9C7DA), fontSize: 12)),
-              ),
-            ),
-          const SizedBox(height: 15),
-          Text(media.title, maxLines: 2, overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
-          if (media.author.isNotEmpty) ...[
-            const SizedBox(height: 5),
-            Text('@${media.author}', style: const TextStyle(
-              color: Color(0xFF8998B0), fontSize: 12)),
-          ],
-          const SizedBox(height: 14),
-          Wrap(spacing: 8, runSpacing: 8, children: [
-            _infoChip('Platform', media.platform.toUpperCase()),
-            _infoChip('Resolution', media.resolution),
-          ]),
-          const SizedBox(height: 17),
-          if (_isDownloading) ...[
-            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-              const Text('Downloading...', style: TextStyle(
-                color: Color(0xFFB6C4D9), fontSize: 12)),
-              Text('${(_downloadProgress * 100).clamp(0, 100).toStringAsFixed(0)}%',
-                style: const TextStyle(color: Color(0xFF6DE5FF),
-                  fontWeight: FontWeight.w800)),
-            ]),
-            const SizedBox(height: 9),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(20),
               child: LinearProgressIndicator(
                 value: _downloadProgress,
-                minHeight: 7,
-                backgroundColor: const Color(0xFF2B3548),
-                valueColor: const AlwaysStoppedAnimation(Color(0xFF69E2FF)),
+                minHeight: 8,
+                backgroundColor: Colors.white10,
+                color: const Color(0xFF00F5D4),
               ),
             ),
             const SizedBox(height: 12),
           ],
-          SizedBox(
-            width: double.infinity,
-            height: 52,
-            child: ElevatedButton.icon(
-              onPressed: _isDownloading ? null : _executeDownload,
-              icon: const Icon(Icons.download_rounded),
-              label: Text(_isDownloading ? 'SAVING TO GALLERY...' : 'DOWNLOAD (${media.resolution})'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF70E5FF),
-                foregroundColor: const Color(0xFF09121F),
-                disabledBackgroundColor: const Color(0xFF42536B),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(16)),
-                textStyle: const TextStyle(
-                  fontWeight: FontWeight.w900, letterSpacing: 1),
+          ElevatedButton.icon(
+            onPressed: _isDownloading ? null : _downloadAndSaveToGallery,
+            icon: _isDownloading
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Color(0xFF080B12),
+                    ),
+                  )
+                : const Icon(Icons.download_rounded, size: 22),
+            label: Text(
+              _isDownloading
+                  ? 'Downloading (${(_downloadProgress * 100).toStringAsFixed(0)}%)...'
+                  : 'Download to Gallery (VirusDownloader)',
+              style: const TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 14,
+              ),
+            ),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF00F5D4),
+              foregroundColor: const Color(0xFF080B12),
+              padding: const EdgeInsets.symmetric(vertical: 15),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
               ),
             ),
           ),
@@ -741,53 +916,38 @@ class _VirusHomeDashboardState extends State<VirusHomeDashboard>
     );
   }
 
-  Widget _infoChip(String label, String value) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
-      decoration: BoxDecoration(
-        color: const Color(0xFF202B3E),
-        borderRadius: BorderRadius.circular(11),
-      ),
-      child: Text('$label: $value', style: const TextStyle(
-        color: Color(0xFFB9C7DA), fontSize: 11)),
-    );
-  }
-}
-
-class _BackgroundGlow extends StatelessWidget {
-  const _BackgroundGlow();
-
-  @override
-  Widget build(BuildContext context) {
-    return IgnorePointer(
-      child: Stack(children: [
-        Positioned(
-          top: -130, right: -110,
-          child: Container(
-            width: 300, height: 300,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              gradient: RadialGradient(colors: [
-                const Color(0xFF624DCE).withOpacity(.23),
-                Colors.transparent,
-              ]),
+  Widget _buildPreviewContent(ExtractedMedia media) {
+    if (_isInitializingPreview) {
+      return const Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircularProgressIndicator(color: Color(0xFF00F5D4)),
+            SizedBox(height: 12),
+            Text(
+              'Initializing live video preview...',
+              style: TextStyle(color: Colors.white70, fontSize: 13),
             ),
-          ),
+          ],
         ),
-        Positioned(
-          top: 340, left: -170,
-          child: Container(
-            width: 320, height: 320,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              gradient: RadialGradient(colors: [
-                const Color(0xFF16BFD4).withOpacity(.12),
-                Colors.transparent,
-              ]),
-            ),
-          ),
+      );
+    }
+    if (_chewieController != null &&
+        _videoController != null &&
+        _videoController!.value.isInitialized) {
+      return Chewie(controller: _chewieController!);
+    }
+    if (media.thumbnailUrl != null && media.thumbnailUrl!.isNotEmpty) {
+      return Image.network(
+        media.thumbnailUrl!,
+        fit: BoxFit.contain,
+        errorBuilder: (_, __, ___) => const Center(
+          child: Icon(Icons.videocam_rounded, color: Colors.white38, size: 48),
         ),
-      ]),
+      );
+    }
+    return const Center(
+      child: Icon(Icons.videocam_rounded, color: Colors.white38, size: 48),
     );
   }
 }

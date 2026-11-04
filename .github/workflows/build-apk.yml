@@ -1,31 +1,60 @@
-name: Build APK
-on: [push, workflow_dispatch]
+name: Build Virus All Downloader v2.9
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
 permissions:
   contents: write
 jobs:
-  build:
+  build-apk:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      - name: Set up JDK 17 (Temurin)
+        uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
-      - uses: subosito/flutter-action@v2
+      - name: Set up Flutter Stable
+        uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
-      - run: flutter pub get
-      - run: flutter build apk --release --split-per-abi
-      - run: |
+          cache: true
+      - name: Refresh lockfile and get dependencies
+        run: |
+          rm -f pubspec.lock
+          flutter pub get
+      - name: Generate Launcher Icons (if mascot asset exists)
+        run: |
+          if [ -f "assets/icon/app_icon.png" ]; then dart run flutter_launcher_icons || echo "icon generation failed; keeping existing mipmap launcher icons."; else echo "assets/icon/app_icon.png not found; keeping existing mipmap launcher icons."; fi
+      - name: Analyze Dart Code
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+      - name: Build Split-per-ABI Release APKs
+        run: flutter build apk --release --split-per-abi
+      - name: Rename APKs for Public Download Page Links
+        run: |
           cd build/app/outputs/flutter-apk
-          mv app-arm64-v8a-release.apk Virus-All-Downloader.apk
-          mv app-armeabi-v7a-release.apk Virus-All-Downloader-armv7.apk
-          mv app-x86_64-release.apk Virus-All-Downloader-x86_64.apk
-      - uses: softprops/action-gh-release@v2
+          cp app-arm64-v8a-release.apk Virus-All-Downloader.apk
+          cp app-armeabi-v7a-release.apk Virus-All-Downloader-armv7.apk
+          cp app-x86_64-release.apk Virus-All-Downloader-x86_64.apk
+          ls -lh Virus-All-Downloader*.apk
+      - name: Upload Renamed Release APKs as Workflow Artifact
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: v1.0.7
-          name: Virus All Downloader v1.0.7
-          files: |
-            build/app/outputs/flutter-apk/Virus-All-Downloader-armv7.apk
+          name: Virus-All-Downloader-v2.9-APKs
+          path: |
             build/app/outputs/flutter-apk/Virus-All-Downloader.apk
+            build/app/outputs/flutter-apk/Virus-All-Downloader-armv7.apk
             build/app/outputs/flutter-apk/Virus-All-Downloader-x86_64.apk
+      - name: Publish GitHub Release on Tag (v1.0.8)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Virus All Downloader v2.9 (${{ github.ref_name }})"
+          files: |
+            build/app/outputs/flutter-apk/Virus-All-Downloader.apk
+            build/app/outputs/flutter-apk/Virus-All-Downloader-armv7.apk
+            build/app/outputs/flutter-apk/Virus-All-Downloader-x86_64.apk
+          generate_release_notes: true
