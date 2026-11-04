@@ -25,8 +25,8 @@ android {
         applicationId = "com.virus.virus_all_downloader"
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
-        versionCode = 108
-        versionName = "2.9.0"
+        versionCode = 109
+        versionName = "2.10.0"
     }
 
     buildTypes {

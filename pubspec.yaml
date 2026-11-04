@@ -1,28 +1,41 @@
 name: virus_all_downloader
-description: "Virus All Downloader-Multi-platform video downloader."
+description: "Virus All Downloader - Multi-platform video downloader."
 publish_to: 'none'
-version: 2.9.0+108
+version: 2.10.0+109
+
 environment:
   sdk: '>=3.3.0 <4.0.0'
+
 dependencies:
   flutter:
     sdk: flutter
   dio: ^5.7.0
-  background_downloader: ^8.5.0
+  # Upgraded from ^8.5.0 (8.9.5) to >=9.5.6 <9.6.0 (resolves to 9.5.9 on Dart 3.7+):
+  # Includes PR #671 ("move WorkManager.get() off main thread in onAttachedToEngine")
+  # and PR #674 (Gradle kotlin-android compatibility fallback).
+  background_downloader: '>=9.5.6 <9.6.0'
   video_player: ^2.9.2
   chewie: ^1.8.5
   gal: ^2.3.0
+
+dependency_overrides:
+  # Pins path_provider_android to the last pre-JNI Pigeon release (2.2.22),
+  # completely removing jni, jni_flutter, JniFlutterPlugin, and libdartjni.so from the APK.
+  path_provider_android: 2.2.22
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^4.0.0
   flutter_launcher_icons: ^0.13.1
+
 flutter_launcher_icons:
   android: true
   ios: false
   image_path: "assets/icon/app_icon.png"
   adaptive_icon_background: "#0A0E17"
   adaptive_icon_foreground: "assets/icon/app_icon.png"
+
 flutter:
   uses-material-design: true
   assets:
