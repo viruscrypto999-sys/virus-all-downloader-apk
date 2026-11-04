@@ -36,7 +36,10 @@ jobs:
           set +e
           flutter build apk --release --split-per-abi > build.log 2>&1
           code=$?
-          grep -E 'error:|FAILED|Execution failed|What went wrong|Caused by|was not found' build.log | head -20 | while IFS= read -r line; do echo "::error::$line"; done
+          {
+            grep -E 'error:|FAILED|Execution failed|minCompileSdk|Caused by|was not found' build.log | head -20
+            grep -A4 'What went wrong' build.log | head -20
+          } | while IFS= read -r line; do echo "::error::$line"; done
           exit $code
       - name: Rename APKs for Public Download Page Links
         run: |
